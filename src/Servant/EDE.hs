@@ -53,11 +53,14 @@ import Data.Traversable (traverse)
 
 import Control.Concurrent
 import Control.Monad.IO.Class
+import qualified Data.Aeson.KeyMap as KeyMap
+import qualified Data.Aeson.Key as Key
 import Data.Aeson (Object, Value(..))
+import Data.Bifunctor (first)
 import Data.Foldable (fold)
+import Data.Kind
 import Data.HashMap.Strict (HashMap, (!),fromList)
 import Data.Proxy
-import Data.Semigroup
 import Data.Text (Text)
 import Data.Text.Lazy.Encoding (encodeUtf8)
 import GHC.TypeLits
@@ -185,7 +188,7 @@ loadTemplates' proxy templatedir =
 --
 -- A complete, runnable version of this can be found
 -- in the @examples@ folder of the git repository.
-data Tpl (ct :: *) (file :: Symbol)
+data Tpl (ct :: Type) (file :: Symbol)
 
 -- the filename doesn't matter for the content type,
 -- as long as 'ct' is a valid one (html, json, css, etc or application-specific)
@@ -195,14 +198,16 @@ instance Accept ct => Accept (Tpl ct file) where
 
 instance (KnownSymbol file, Accept ct, ToObject a) => MimeRender (Tpl ct file) a where
   mimeRender _ val = encodeUtf8 . result (error . show) id $
-    renderWith flts templ (toObject val)
+    renderWith flts templ (mkObject val)
 
     where templ = tmap ! filename
           filename = symbolVal (Proxy :: Proxy file)
           tmplfs = unsafePerformIO (readMVar __template_store)
           tmap = templateMap $ _templates tmplfs
           flts = _filters tmplfs
+          mkObject = fromList . map (first Key.toText) . KeyMap.toList . toObject
 
+          
 
 __template_store :: MVar TemplatesAndFilters
 __template_store = unsafePerformIO newEmptyMVar
@@ -258,10 +263,10 @@ instance (KnownSymbol file, ToObject a) => MimeRender (HTML file) a where
     sanitizeObject (toObject val)
 
 sanitizeObject :: Object -> Object
-sanitizeObject = HM.fromList . map sanitizeKV . HM.toList
+sanitizeObject = KeyMap.fromList . map sanitizeKV . KeyMap.toList
 
-sanitizeKV :: (Text, Value) -> (Text, Value)
-sanitizeKV (k, v) = (sanitize k, sanitizeValue v)
+sanitizeKV :: (Key.Key, Value) -> (Key.Key, Value)
+sanitizeKV (k, v) = (Key.fromText  . sanitize $ Key.toText k, sanitizeValue v)
 
 sanitizeValue :: Value -> Value
 sanitizeValue (String s) = String (sanitize s)
@@ -291,7 +296,7 @@ type instance TemplateFiles (Post cs a)   = CTFiles cs
 type instance TemplateFiles (Put cs a)    = CTFiles cs
 type instance TemplateFiles Raw           = '[]
 
-type family CTFiles (cts :: [*]) :: [Symbol] where
+type family CTFiles (cts :: [Type]) :: [Symbol] where
   CTFiles '[]        = '[]
   CTFiles (c ': cts) = Append (CTFile c) (CTFiles cts)
 
@@ -325,8 +330,6 @@ instance Semigroup Templates where
 
 instance Monoid Templates where
   mempty = Templates mempty
-
-  a `mappend` b = a <> b
 
 -- A data type that holds both the compiled templates and
 -- any passed-in custom filters
